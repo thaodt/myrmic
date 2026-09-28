@@ -584,31 +584,31 @@ async fn send_recv(
 ) -> Option<crate::types::Response> {
     use crate::framing::{decode_frame, read_frame, write_frame};
 
-    inner.conn.as_ref()?;
+    let conn = inner.conn.as_mut()?;
 
-    // Arm the teardown guard before the first byte goes out: from here on,
-    // dropping this future — at the write or at the read — must cost the
-    // connection, because the wire state can no longer be known.
+    // Write the request.  If this fails, tear down immediately.
+    if write_frame(&mut conn.writer, req).await.is_err() {
+        inner.conn = None;
+        return None;
+    }
+
+    // The request is now on the wire.  Install a drop-guard: if this future is
+    // dropped (cancelled) before we finish reading the response, the guard tears
+    // down the connection so the stale response cannot be read by the next caller.
+    //
+    // The guard is disarmed (set to false) only after a successful read.
     let must_teardown = TeardownGuard {
         conn: &mut inner.conn,
     };
 
-    let result = {
-        let conn = must_teardown.conn.as_mut()?;
-        if write_frame(&mut conn.writer, req).await.is_err() {
-            None
-        } else {
-            read_frame(&mut conn.reader)
-                .await
-                .ok()
-                .and_then(|f| decode_frame(&f).ok())
-        }
-    };
+    let frame = read_frame(&mut must_teardown.conn.as_mut()?.reader).await;
+    let result = frame.ok().and_then(|f| decode_frame(&f).ok());
 
-    // Disarm only on a fully decoded response.  On any failure the guard is
-    // still armed and its drop tears the connection down.
-    if result.is_some() {
-        must_teardown.disarm();
+    // Read completed — disarm the guard.
+    must_teardown.disarm();
+
+    if result.is_none() {
+        inner.conn = None;
     }
     result
 }

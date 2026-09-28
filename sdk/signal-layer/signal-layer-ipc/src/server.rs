@@ -143,7 +143,7 @@ where
         let req: Request = decode_frame(&frame)?;
 
         let resp = dispatch_request(req, &*store, outlets.as_deref());
-        write_frame_bounded(&mut writer, &resp, REQUEST_TIMEOUT_SECS).await?;
+        crate::framing::write_frame(&mut writer, &resp).await?;
     }
 }
 
